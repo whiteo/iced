@@ -622,17 +622,27 @@ pub struct Compositor {
 #[derive(Debug, Clone)]
 struct Frame {
     background: Color,
+    scale_factor: f32,
     layers: Vec<layer::Layer>,
 }
 
 impl Frame {
-    fn damage(&self, layers: &[layer::Layer]) -> Vec<Rectangle> {
-        graphics::damage::diff(
-            &self.layers,
-            layers,
-            |layer| vec![layer.bounds],
-            layer::Layer::damage,
-        )
+    /// Returns `None` when the whole frame must be redrawn, since layers
+    /// are compared in logical units.
+    fn damage(
+        &self,
+        background: Color,
+        scale_factor: f32,
+        layers: &[layer::Layer],
+    ) -> Option<Vec<Rectangle>> {
+        (self.background == background && self.scale_factor == scale_factor).then(|| {
+            graphics::damage::diff(
+                &self.layers,
+                layers,
+                |layer| vec![layer.bounds],
+                layer::Layer::damage,
+            )
+        })
     }
 }
 
@@ -760,8 +770,7 @@ impl graphics::Compositor for Compositor {
 
         let damage = old_frame
             .and_then(|last_frame| {
-                (last_frame.background == background_color)
-                    .then(|| last_frame.damage(renderer.layers()))
+                last_frame.damage(background_color, viewport.scale_factor(), renderer.layers())
             })
             .unwrap_or_else(|| vec![Rectangle::with_size(viewport.logical_size())]);
 
@@ -778,8 +787,11 @@ impl graphics::Compositor for Compositor {
                 .frames
                 .front()
                 .and_then(|current_frame| {
-                    (current_frame.background == background_color)
-                        .then(|| current_frame.damage(renderer.layers()))
+                    current_frame.damage(
+                        background_color,
+                        viewport.scale_factor(),
+                        renderer.layers(),
+                    )
                 })
                 .unwrap_or_else(|| vec![Rectangle::with_size(viewport.logical_size())]);
 
@@ -792,6 +804,7 @@ impl graphics::Compositor for Compositor {
 
         surface.frames.push_front(Frame {
             background: background_color,
+            scale_factor: viewport.scale_factor(),
             layers: renderer.layers().to_vec(),
         });
 
@@ -1102,6 +1115,25 @@ mod damage_clip {
             pixel(&back, physical, green_center, green_center),
             [0, 0, 255, 255]
         );
+    }
+
+    #[test]
+    fn scale_factor_change_redraws_whole_frame() {
+        let background = Color::from_rgb(0.1, 0.1, 0.1);
+        let mut renderer = scene();
+
+        let frame = Frame {
+            background,
+            scale_factor: 1.0,
+            layers: renderer.layers().to_vec(),
+        };
+
+        assert_eq!(
+            frame.damage(background, 1.0, renderer.layers()),
+            Some(vec![])
+        );
+        assert_eq!(frame.damage(background, 2.0, renderer.layers()), None);
+        assert_eq!(frame.damage(Color::BLACK, 1.0, renderer.layers()), None);
     }
 
     #[test]
